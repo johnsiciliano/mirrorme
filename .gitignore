@@ -1,0 +1,9 @@
+.venv/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.log
+.DS_Store
+site_mirror*/
+
