@@ -6,9 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "mirrorme"
 version = "0.1.0"
 description = "Playwright-powered offline website mirroring with relative links."
-authors = [{ name = "Your Name", email = "you@example.com" }]
+authors = [{ name = "John Siciliano", email = "john@johnsiciliano.com" }]
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "GPL-3.0-or-later"
 requires-python = ">=3.9"
 dependencies = [
   "playwright>=1.46",
@@ -20,9 +20,6 @@ dependencies = [
 
 [project.scripts]
 mirrorme = "mirrorme.cli:app"
-
-[tool.setuptools.package-data]
-"mirrorme" = ["py.typed"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
