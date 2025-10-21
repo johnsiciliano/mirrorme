@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 import typer
 from rich import print
 from typing import Optional, List
-
 from .mirror import MirrorConfig, run_mirror
 
 app = typer.Typer(help="Playwright-powered offline website mirroring with relative links.")
@@ -19,7 +17,7 @@ def main(
     ),
     include_assets_offsite: bool = typer.Option(
         True, "--assets-offsite/--no-assets-offsite",
-        help="Save assets (img/css/js/fonts) from allowed hosts even if page link traversal is restricted."
+        help="Save assets (img/css/js/fonts) from allowed hosts."
     ),
     user_agent: str = typer.Option(
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -30,12 +28,9 @@ def main(
         help="Playwright storage state JSON for authenticated mirroring."
     ),
     headless: bool = typer.Option(True, "--headless/--headed", help="Run browser headless or visible."),
-    concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max concurrent page fetches (politeness first)."),
+    concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max concurrent page fetches."),
     timeout_ms: int = typer.Option(30000, "--timeout-ms", help="Default navigation timeout per page."),
 ):
-    """
-    Mirror a site to a local folder and rewrite links to relative paths.
-    """
     cfg = MirrorConfig(
         start_url=url,
         out_dir=out,

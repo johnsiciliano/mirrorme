@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Set, Tuple, List
 
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright, Page, BrowserContext
 
 @dataclass
 class MirrorConfig:
@@ -34,7 +34,6 @@ def to_rel_path(out_dir: pathlib.Path, url: str) -> pathlib.Path:
     if path.endswith("/"):
         path += "index.html"
     if not os.path.splitext(path)[1]:
-        # If no extension and looks like a page, assume HTML
         path += ".html"
     safe = re.sub(r"[^A-Za-z0-9._/\-]", "_", path)
     return out_dir / host / safe.lstrip("/")
@@ -85,7 +84,7 @@ def rewrite_urls_in_text(text: str, mapping: Dict[str, pathlib.Path], base_file:
     text = re.sub(r'url\(([^)]+)\)', css_url, text)
     return text
 
-def run_mirror(cfg: MirrorConfig):
+async def run_mirror_async(cfg: MirrorConfig):
     out_dir = pathlib.Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -99,48 +98,46 @@ def run_mirror(cfg: MirrorConfig):
     saved_assets: Dict[str, pathlib.Path] = {}
     page_html_paths: Dict[str, pathlib.Path] = {}
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=cfg.headless, args=["--disable-web-security"])
+    sem = asyncio.Semaphore(max(1, cfg.concurrency))
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=cfg.headless, args=["--disable-web-security"])
         context_kwargs = {"user_agent": cfg.user_agent}
         if cfg.storage_state_path:
             context_kwargs["storage_state"] = cfg.storage_state_path
-        context = browser.new_context(**context_kwargs)
+        context: BrowserContext = await browser.new_context(**context_kwargs)
         context.set_default_timeout(cfg.default_timeout_ms)
 
         # capture all non-HTML assets
-        def handle_response(res):
+        async def handle_response(res):
             try:
                 url = url_norm(res.url)
                 host = urllib.parse.urlparse(url).hostname
-                if not host:
+                if not host or host not in allowed_hosts:
                     return
-                if (host in allowed_hosts) and res.status == 200:
-                    ct = res.headers.get("content-type", "")
-                    # Let HTML be handled separately after DOM rendering
-                    if "text/html" in ct:
-                        return
-                    path = to_rel_path(out_dir, url)
-                    if url not in saved_assets:
-                        body = res.body()
-                        ensure_parent(path)
-                        with open(path, "wb") as f:
-                            f.write(body)
-                        saved_assets[url] = path
+                if res.status != 200:
+                    return
+                ct = (await res.headers()).get("content-type", "")
+                if "text/html" in ct:
+                    return
+                path = to_rel_path(out_dir, url)
+                if url not in saved_assets:
+                    body = await res.body()
+                    ensure_parent(path)
+                    with open(path, "wb") as f:
+                        f.write(body)
+                    saved_assets[url] = path
             except Exception:
                 pass
 
         context.on("response", handle_response)
 
-        sem = asyncio.Semaphore(cfg.concurrency)
-
         async def fetch_page(url: str, depth: int):
             url_n = url_norm(url)
-            if url_n in visited_pages:
+            if url_n in visited_pages or depth > cfg.max_depth:
                 return
-            if depth > cfg.max_depth:
-                return
-
             visited_pages.add(url_n)
+
             page = await context.new_page()
             await page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
             try:
@@ -183,50 +180,39 @@ def run_mirror(cfg: MirrorConfig):
                                 absu = urllib.parse.urljoin(url_n, src)
                                 srcset_urls.append(url_norm(absu))
 
-                # Enqueue same-host HTML pages
+                # queue same-host pages
                 for a in anchors:
                     host = urllib.parse.urlparse(a).hostname
                     if host and host == start_host:
                         to_visit.append((a, depth + 1))
 
-                # Trigger asset fetches explicitly (Playwright will honor cookies/referers)
-                assets = set(scripts + links + imgs + srcset_urls)
-                for asset_url in assets:
+                # trigger asset fetches (Playwright will use proper headers/cookies)
+                for asset_url in set(scripts + links + imgs + srcset_urls):
                     host = urllib.parse.urlparse(asset_url).hostname
-                    if not host:
-                        continue
-                    if host in allowed_hosts:
-                        # If offsite assets are allowed (default True), we still save them.
+                    if host and host in allowed_hosts and cfg.include_assets_offsite:
                         await context.request.get(asset_url)
 
             finally:
                 await page.close()
 
-        # Run the queue
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async def runner():
-            while to_visit:
-                batch = []
-                while to_visit and len(batch) < cfg.concurrency:
-                    u, d = to_visit.pop(0)
-                    if u in visited_pages:
-                        continue
+        # run pages with simple batching
+        while to_visit:
+            batch: List[Tuple[str, int]] = []
+            while to_visit and len(batch) < cfg.concurrency:
+                u, d = to_visit.pop(0)
+                if u not in visited_pages:
                     batch.append((u, d))
 
-                if not batch:
-                    break
+            if not batch:
+                break
 
-                async def _task(u, d):
-                    async with sem:
-                        await fetch_page(u, d)
+            async def _task(u, d):
+                async with sem:
+                    await fetch_page(u, d)
 
-                await asyncio.gather(*[_task(u, d) for (u, d) in batch])
+            await asyncio.gather(*[_task(u, d) for (u, d) in batch])
 
-        loop.run_until_complete(runner())
-
-        # Build mapping and rewrite HTML
+        # rewrite all HTML to local relative paths
         mapping = {u: p for (u, p) in saved_assets.items()}
         for u, p in page_html_paths.items():
             mapping[u] = p
@@ -239,7 +225,7 @@ def run_mirror(cfg: MirrorConfig):
                 with open(p, "w", encoding="utf-8") as f:
                     f.write(new_txt)
 
-        # Simple index
+        # index
         index_path = pathlib.Path(cfg.out_dir) / "index.html"
         ensure_parent(index_path)
         with open(index_path, "w", encoding="utf-8") as f:
@@ -249,5 +235,9 @@ def run_mirror(cfg: MirrorConfig):
                 f.write(f'<li><a href="{rel}">{u}</a></li>\n')
             f.write("</ul>\n")
 
-        browser.close()
+        await browser.close()
+
+def run_mirror(cfg: MirrorConfig):
+    # Runs in a fresh event loop even if the caller is sync
+    asyncio.run(run_mirror_async(cfg))
 
