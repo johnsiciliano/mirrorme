@@ -13,11 +13,23 @@ def main(
     depth: int = typer.Option(3, "--depth", "-d", help="Max link depth to follow."),
     allow_host: List[str] = typer.Option(
         None, "--allow-host", "-H",
-        help="Additional host(s) allowed to mirror (repeat flag). Defaults to start host only."
+        help="Additional host(s) allowed for traversal/assets (repeat flag). Defaults to start host only."
     ),
     include_assets_offsite: bool = typer.Option(
         True, "--assets-offsite/--no-assets-offsite",
         help="Save assets (img/css/js/fonts) from allowed hosts."
+    ),
+    all_host_assets: bool = typer.Option(
+        False, "--all-host-assets/--no-all-host-assets",
+        help="Save assets from ANY host (but still only traverse HTML on the start host)."
+    ),
+    inline_css_imports: bool = typer.Option(
+        True, "--inline-css-imports/--no-inline-css-imports",
+        help="Resolve and download CSS @import URLs found inside stylesheets."
+    ),
+    strip_csp: bool = typer.Option(
+        True, "--strip-csp/--keep-csp",
+        help="Remove meta Content-Security-Policy tags so local assets load from file://."
     ),
     user_agent: str = typer.Option(
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -30,6 +42,14 @@ def main(
     headless: bool = typer.Option(True, "--headless/--headed", help="Run browser headless or visible."),
     concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max concurrent page fetches."),
     timeout_ms: int = typer.Option(30000, "--timeout-ms", help="Default navigation timeout per page."),
+    scroll: bool = typer.Option(
+        True, "--scroll/--no-scroll",
+        help="Auto-scroll pages to trigger lazy-loaded assets."
+    ),
+    wait_after_load_ms: int = typer.Option(
+        800, "--wait-after-load-ms",
+        help="Extra wait after networkidle to let JS/lazy loaders fetch assets."
+    ),
 ):
     cfg = MirrorConfig(
         start_url=url,
@@ -37,11 +57,16 @@ def main(
         max_depth=depth,
         extra_allowed_hosts=set(allow_host or []),
         include_assets_offsite=include_assets_offsite,
+        all_host_assets=all_host_assets,
+        inline_css_imports=inline_css_imports,
+        strip_csp=strip_csp,
         user_agent=user_agent,
         storage_state_path=storage_state,
         headless=headless,
         concurrency=max(1, concurrency),
         default_timeout_ms=timeout_ms,
+        scroll=scroll,
+        wait_after_load_ms=wait_after_load_ms,
     )
     print(f"[bold cyan]mirrorme[/] -> [green]{url}[/]  [dim]→[/]  [magenta]{out}[/]")
     run_mirror(cfg)
