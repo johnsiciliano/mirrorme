@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mirrorme"
-version = "0.1.0"
+version = "0.2.0"
 description = "Playwright-powered offline website mirroring with relative links."
 authors = [{ name = "John Siciliano", email = "john@johnsiciliano.com" }]
 readme = "README.md"

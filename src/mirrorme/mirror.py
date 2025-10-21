@@ -3,9 +3,18 @@ from __future__ import annotations
 import asyncio, os, re, pathlib, urllib.parse
 from dataclasses import dataclass, field
 from typing import Dict, Set, Tuple, List
-
+import hashlib
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright, BrowserContext
+
+
+_ASSET_EXTS = {
+    ".png",".jpg",".jpeg",".webp",".avif",".gif",".svg",".ico",".bmp",".tiff",
+    ".css",".js",".mjs",".map",
+    ".woff",".woff2",".ttf",".otf",".eot",
+    ".mp4",".webm",".ogg",".mp3",".wav",".mov",".m4a",".m4v",
+    ".pdf",".txt",".xml",".json",".wasm"
+}
 
 @dataclass
 class MirrorConfig:
@@ -28,20 +37,55 @@ class MirrorConfig:
     default_timeout_ms: int = 30000
     scroll: bool = True                    # NEW: simulate user scroll for lazy loading
     wait_after_load_ms: int = 800          # NEW: extra idle wait
+    flat_assets: bool = True  
+    assets_mode: str = "flat"   # flat | per-host | pages
+    assets_dir: str = "assets"  # used for flat/per-host
 
 def url_norm(u: str) -> str:
     return urllib.parse.urldefrag(u)[0]
 
-def to_rel_path(out_dir: pathlib.Path, url: str) -> pathlib.Path:
+def _is_asset(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in _ASSET_EXTS
+
+def _safe_path(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._/\-]", "_", s)
+
+def to_rel_path(out_dir: pathlib.Path, url: str, cfg, start_host: str, is_html_hint: bool | None = None) -> pathlib.Path:
     p = urllib.parse.urlparse(url)
     host = p.hostname or "unknown"
     path = p.path or "/"
+
+    # normalize filename
     if path.endswith("/"):
         path += "index.html"
-    if not os.path.splitext(path)[1]:
+    name, ext = os.path.splitext(path)
+    if not ext:
         path += ".html"
-    safe = re.sub(r"[^A-Za-z0-9._/\-]", "_", path)
-    return out_dir / host / safe.lstrip("/")
+        ext = ".html"
+
+    safe = re.sub(r"[^A-Za-z0-9._/\-]", "_", path.lstrip("/"))
+    is_html = (ext.lower() == ".html") if is_html_hint is None else is_html_hint
+
+    if is_html:
+        # HTML always under pages/<host>/...
+        return out_dir / "pages" / (p.hostname or start_host or "unknown") / safe
+
+    mode = (cfg.assets_mode or "flat").lower()
+    if mode == "pages":
+        # ⬅️ place ALL assets under the start host’s pages tree
+        # pages/<START_HOST>/<assets_dir>/<asset-host>/safe
+        return out_dir / "pages" / (start_host or "unknown") / cfg.assets_dir / (host or "unknown") / safe
+
+    elif mode == "per-host":
+        return out_dir / cfg.assets_dir / host / safe
+
+    else:  # flat
+        target = out_dir / cfg.assets_dir / safe
+        if target.exists():
+            h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
+            base, ext2 = os.path.splitext(target.name)
+            target = target.with_name(f"{base}__{h}{ext2}")
+        return target
 
 def ensure_parent(fp: pathlib.Path):
     fp.parent.mkdir(parents=True, exist_ok=True)
@@ -133,11 +177,12 @@ async def run_mirror_async(cfg: MirrorConfig):
                 status = res.status
                 if status != 200:
                     return
-                ct = (await res.headers()).get("content-type", "")
+                headers = await res.all_headers()
+                ct = headers.get("content-type", "")
                 if "text/html" in (ct or ""):
                     return
                 if (host in allowed_hosts) or cfg.all_host_assets:
-                    path = to_rel_path(out_dir, url)
+                    path = to_rel_path(out_dir, url, cfg, start_host, is_html_hint=False)
                     if url not in saved_assets:
                         body = await res.body()
                         ensure_parent(path)
@@ -184,7 +229,7 @@ async def run_mirror_async(cfg: MirrorConfig):
                     await page.wait_for_timeout(cfg.wait_after_load_ms)
 
                 html = await page.content()
-                html_path = to_rel_path(out_dir, url_n)
+                html_path = to_rel_path(out_dir, url_n, cfg, start_host, is_html_hint=True)
                 ensure_parent(html_path)
                 with open(html_path, "w", encoding="utf-8") as f:
                     f.write(html)
