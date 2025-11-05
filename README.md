@@ -10,7 +10,6 @@ A Playwright-powered website mirrorer that renders pages like a real browser, do
 ## Install
 
 ```bash
-git clone https://github.com/yourname/mirrorme.git
 cd mirrorme
 ./install.sh
 # then:
